@@ -1,0 +1,17 @@
+[project]
+name = "insider-flow"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dagster>=1.12.8",
+    "dagster-webserver>=1.12.8",
+    "duckdb>=1.4.3",
+    "httpx>=0.28.1",
+    "lxml>=6.0.2",
+    "pandas>=2.3.3",
+    "polars>=1.36.1",
+    "pydantic>=2.12.5",
+    "streamlit>=1.52.2",
+]
