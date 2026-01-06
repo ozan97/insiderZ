@@ -3,6 +3,7 @@ from dagster import asset, AssetExecutionContext, Output, MetadataValue
 import polars as pl
 from typing import List
 from ..parsing import parse_filing
+from ..utils import get_data_path, get_storage_options # Import utils
 
 @asset(
     group_name="transformation",
@@ -11,18 +12,18 @@ from ..parsing import parse_filing
 def parsed_insider_trades(context: AssetExecutionContext, raw_form4_filings: List[str]):
     
     if not raw_form4_filings:
-        context.log.warning("No files to parse.")
         return Output(pl.DataFrame(), metadata={"count": 0})
 
-    # ... (Date logic remains the same)
     sample_path = raw_form4_filings[0]
-    path_parts = sample_path.replace("\\", "/").split("/") 
-    filing_date_str = path_parts[-2] 
+    # Handle cloud paths vs local paths for date extraction
+    # gs://bucket/raw/filings/2026-01-02/file.txt
+    parts = sample_path.replace("\\", "/").split("/")
+    filing_date_str = parts[-2] 
     
     all_trades = []
     
-    # ... (Loop logic remains the same)
     for i, file_path in enumerate(raw_form4_filings):
+        # Now parse_filing uses fsspec, so it handles gs:// automatically
         trades = parse_filing(file_path, filing_date_str)
         all_trades.extend([t.model_dump() for t in trades])
         
@@ -32,25 +33,26 @@ def parsed_insider_trades(context: AssetExecutionContext, raw_form4_filings: Lis
     if not all_trades:
         return Output(pl.DataFrame(), metadata={"count": 0})
 
-    # Create DataFrame
     df = pl.DataFrame(all_trades)
     
-    # Save to Processed Data Lake
     output_filename = f"trades_{filing_date_str}.parquet"
-    output_path = os.path.join("data", "processed", output_filename)
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    save_path = get_data_path(f"processed/{output_filename}") # Use helper
     
-    df.write_parquet(output_path)
+    # Create dir only if local
+    if "gs://" not in save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
     
-    # Note: Polars to_pandas() is needed because Dagster's markdown renderer likes standard types
+    # Write with credentials
+    df.write_parquet(save_path, storage_options=get_storage_options())
+    
+    # Preview logic (unchanged)
     preview_md = df.head(10).to_pandas().to_markdown(index=False)
 
     return Output(
-        value=df, # The actual data passed to downstream assets
+        value=df, 
         metadata={
-            "row_count": len(df), # Numeric metric (graphed over time)
-            "path": output_path,
-            "columns": MetadataValue.json(df.columns),
-            "preview": MetadataValue.md(preview_md) # The visual table
+            "row_count": len(df), 
+            "path": save_path,
+            "preview": MetadataValue.md(preview_md)
         }
     )
