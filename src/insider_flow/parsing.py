@@ -17,24 +17,22 @@ def extract_xml_from_text(content: str) -> Optional[str]:
     return None
 
 def parse_filing(file_path: str, filing_date: str) -> List[InsiderTrade]:
-    """
-    Parses a filing (Local or Cloud).
-    """
     try:
-        # --- NEW "SMART OPEN" LOGIC ---
-        # fsspec.open handles 'gs://' automatically if gcsfs is installed
-        # mode='r' requires text mode, so we need encoding
-        storage_opts = get_storage_options()
+        # Get raw options
+        opts = get_storage_options()
         
-        with fsspec.open(file_path, mode='r', encoding='utf-8', errors='ignore', **storage_opts) as f:
+        # --- Translate for fsspec
+        if "google_application_credentials" in opts:
+            opts["token"] = opts["google_application_credentials"]
+        
+        # Now pass these fixed opts to fsspec.open
+        with fsspec.open(file_path, mode='r', encoding='utf-8', errors='ignore', **opts) as f:
             content = f.read()
-        # ------------------------------
-            
+
     except Exception as e:
         print(f"Error reading {file_path}: {e}")
         return []
 
-    # ... The rest of the file (XML parsing logic) remains EXACTLY the same ...
     xml_content = extract_xml_from_text(content)
     if not xml_content:
         return []
