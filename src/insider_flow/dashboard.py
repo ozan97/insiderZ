@@ -5,7 +5,7 @@ import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
 import plotly.express as px
-from .utils import get_data_path, get_storage_options
+from utils import get_data_path, get_storage_options
 
 # ---------------------------------------------------------
 # 1. PAGE CONFIGURATION
