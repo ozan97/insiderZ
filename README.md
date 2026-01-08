@@ -1,5 +1,5 @@
 
-# 🐋 InsiderZ: Cpt. Ahab's Data Lakehouse
+# InsiderZ 🐋  Cpt. Ahab's Data Lakehouse
 
 **InsiderZ** is an end-to-end data engineering pipeline that tracks Corporate Insider Trading (SEC Form 4) to identify "Unusual Whale Activity." 
 
@@ -114,4 +114,4 @@ The Dashboard separates these into:
     - Create a Discord/Slack webhook asset.
     - Trigger push notifications when a "Perfect Storm" trade occurs (Score ≥ 8).
 
-```
+# Death to capitalism 🤗
