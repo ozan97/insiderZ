@@ -1,7 +1,7 @@
 
-# 🐋 InsiderFlow: Cpt. Ahab's Data Lakehouse
+# 🐋 InsiderZ: Cpt. Ahab's Data Lakehouse
 
-**InsiderFlow** (aka *InsiderZ*) is an end-to-end data engineering pipeline that tracks Corporate Insider Trading (SEC Form 4) to identify "Unusual Whale Activity." 
+**InsiderZ** is an end-to-end data engineering pipeline that tracks Corporate Insider Trading (SEC Form 4) to identify "Unusual Whale Activity." 
 
 It processes messy SGML/XML filings into a structured Data Lakehouse, scoring trades to differentiate between standard executive compensation and **High Conviction Signals** (both Long and Short).
 
@@ -113,4 +113,5 @@ The Dashboard separates these into:
 - [ ] **Active Alerting:** 
     - Create a Discord/Slack webhook asset.
     - Trigger push notifications when a "Perfect Storm" trade occurs (Score ≥ 8).
+
 ```
