@@ -1,16 +1,17 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
 
 # SEC Configuration
 SEC_USER_AGENT = "InsiderFlow kire.min@xitroo.de" 
 SEC_BASE_URL = "https://www.sec.gov/Archives"
 # Cloud Configuration
-# We read this from Environment Variable. Default to False (Local).
 USE_CLOUD = os.getenv("USE_CLOUD", "False") == "True"
-GCS_BUCKET_NAME = "insider-flow-lake"
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "insider-flow-lake")
 
 def get_storage_options():
     """
-    Returns the credentials for Polars/DuckDB/Pandas.
+    Returns the credentials for Polars/Pandas.
     """
     # 1. If running locally and wanting to use Cloud, use the JSON key
     if USE_CLOUD and os.path.exists("gcp_key.json"):
@@ -26,9 +27,7 @@ def get_data_path(relative_path: str) -> str:
     - 'gs://my-bucket/raw/filings/file.txt' (Cloud)
     """
     # Normalize path separators for Windows compatibility
-    clean_path = relative_path.replace("\\", "/")
-    
     if USE_CLOUD:
-        return f"gs://{GCS_BUCKET_NAME}/{clean_path}"
+        return f"gs://{GCS_BUCKET_NAME}/{relative_path}"
     else:
-        return os.path.join("data", clean_path)
+        return os.path.join("data", relative_path).replace("\\", "/")

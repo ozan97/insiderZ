@@ -5,20 +5,19 @@ import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
 import plotly.express as px
-from utils import get_data_path, get_storage_options
+from utils import get_data_path
 
 # ---------------------------------------------------------
 # 1. PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="InsiderFlow", 
+    page_title="InsiderZ", 
     page_icon="🐋", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("🐋 Cpt. Ahab's Dashboard: Insider Trading Tracker")
-st.markdown("### *Harnessing Data Engineering to find the Whales*")
+st.title("Cpt. Ahab's Dashboard 🐋 InsiderZ Trading Tracker")
 
 # Helper functions
 @st.cache_data(ttl=3600) # Cache data for 1 hour so it's fast
@@ -91,7 +90,7 @@ def render_chart(ticker, trades_df):
         hovermode="x unified"
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     
 # ---------------------------------------------------------
 # 2. DATA CONNECTION (DuckDB + Cloud/Local Logic)
@@ -99,23 +98,34 @@ def render_chart(ticker, trades_df):
 @st.cache_resource
 def get_database_connection():
     """
-    Establishes a DuckDB connection and configures it for GCS if needed.
-    Cached resource to avoid reloading on every interaction.
+    Establishes a DuckDB connection and configures GCS authentication
+    using the modern DuckDB 1.0 Secrets Manager.
     """
     try:
         con = duckdb.connect(database=":memory:")
+        con.execute("INSTALL httpfs; LOAD httpfs;")
         
-        # Configure GCS if we are in Cloud Mode or have keys
-        storage_opts = get_storage_options()
+        # Check environment for HMAC keys
         use_cloud = os.getenv("USE_CLOUD", "False") == "True"
+        access_key = os.getenv("GCP_HMAC_ACCESS_KEY")
+        secret_key = os.getenv("GCP_HMAC_SECRET")
         
-        if "google_application_credentials" in storage_opts:
-            # Local Mode with Key File
-            con.execute("INSTALL httpfs; LOAD httpfs;")
-            con.execute(f"SET google_credentials = '{storage_opts['google_application_credentials']}';")
+        if use_cloud and access_key and secret_key:
+            # Modern DuckDB 1.0+ Auth using HMAC Keys
+            # We create a specific secret for the GCS provider
+            con.execute(f"""
+                CREATE SECRET secret_gcs (
+                    TYPE GCS,
+                    KEY_ID '{access_key}',
+                    SECRET '{secret_key}'
+                );
+            """)
         elif use_cloud:
-            # Cloud Run Mode (Auto Auth)
-            con.execute("INSTALL httpfs; LOAD httpfs;")
+            # Fallback: Try to rely on system-environment (Cloud Run often injects this automatically)
+            # or the 'gcp_key.json' path if strictly necessary, but HMAC is preferred.
+            # If you are local without HMAC keys, this part might fail on DuckDB 1.0+.
+            # For local dev, ensure HMAC keys are in .env!
+            pass
 
         return con
     except Exception as e:
@@ -138,16 +148,17 @@ try:
     # Load Raw Trades View
     con.execute(f"CREATE OR REPLACE VIEW trades AS SELECT * FROM '{trades_path}'")
     
-    # Load Signals View (Handle case where pipeline hasn't run 'signals' asset yet)
+    # Load Signals View
     try:
         con.execute(f"CREATE OR REPLACE VIEW signals AS SELECT * FROM '{signals_path}'")
         has_signals = True
-    except Exception:
+    except Exception as e:
+        # st.error(f"Error loading signals: {e}") # Uncomment to debug
         has_signals = False
         
     data_loaded = True
 except Exception as e:
-    st.warning("No data found. Please run the Dagster pipeline first.")
+    st.error(f"Error loading data from {trades_path}. Check your .env keys! Error: {e}")
     st.stop()
 
 # ---------------------------------------------------------
@@ -183,7 +194,7 @@ with tab_signals:
             st.dataframe(
                 sig_df.style.format({"total_value": "${:,.0f}"})
                 .background_gradient(subset=["conviction_score"], cmap="Greens"),
-                use_container_width=True
+                width='stretch'
             )
         else:
             st.write("No signals found recently.")
@@ -235,11 +246,11 @@ with tab_explorer:
             title="Volume by Day (Buy vs Sell)",
             color_discrete_map={"P": "#00ff00", "S": "#ff0000"}
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         # Table
         def highlight_buy_sell(row):
-            color = '#d4edda' if row.transaction_code == 'P' else '#f8d7da'
+            color = "#00ff3c73" if row.transaction_code == 'P' else "#ff505071"
             return [f'background-color: {color}'] * len(row)
 
         st.subheader("Transaction Details")
@@ -247,5 +258,5 @@ with tab_explorer:
         st.dataframe(
             df.style.format({"total_value": "${:,.0f}", "price_per_share": "${:.2f}"})
             .apply(highlight_buy_sell, axis=1),
-            use_container_width=True
+            width='stretch'
         )

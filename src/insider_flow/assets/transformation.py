@@ -4,11 +4,13 @@ from dagster import asset, AssetExecutionContext, Output, MetadataValue
 import polars as pl
 from typing import List
 from ..parsing import parse_filing
-from ..utils import get_data_path, get_storage_options, USE_CLOUD
+from ..utils import get_data_path, get_storage_options
+from ..partitions import daily_partitions_def
 
 @asset(
     group_name="transformation",
-    description="Parses raw text filings into structured insider trades."
+    description="Parses raw text filings into structured insider trades.",
+    partitions_def=daily_partitions_def 
 )
 def parsed_insider_trades(context: AssetExecutionContext, raw_form4_filings: List[str]):
     

@@ -1,5 +1,6 @@
 data/
 .venv/
+.env
 __pycache__/
 .dagster/
 gcp_key.json

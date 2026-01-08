@@ -1,11 +1,13 @@
 from dagster import asset, AssetExecutionContext
 import polars as pl
 from ..utils import get_data_path, get_storage_options
+from ..partitions import daily_partitions_def
 
 
 @asset(
     group_name="analytics",
-    description="Filters trades for high-conviction signals (C-Suite, High Value, Clusters)."
+    description="Filters trades for high-conviction signals (C-Suite, High Value, Clusters).",
+    partitions_def=daily_partitions_def 
 )
 def high_conviction_signals(context: AssetExecutionContext, parsed_insider_trades: pl.DataFrame):
     

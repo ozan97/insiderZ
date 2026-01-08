@@ -1,11 +1,12 @@
 import os
 import gcsfs
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dagster import asset, AssetExecutionContext
 from datetime import datetime
+from dagster import asset, AssetExecutionContext
 import polars as pl
 from ..resources import SECClient
 from ..utils import get_data_path, USE_CLOUD, get_storage_options
+from ..partitions import daily_partitions_def
 
 SEC_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
 
@@ -54,14 +55,12 @@ def process_filing(row, date_folder, sec_client, fs, context):
         return output_filepath
 
     except Exception as e:
-        # Log failure but don't crash the thread
-        # We can't use context.log inside a thread easily without issues, 
-        # so we print or return the error to be logged later.
         return f"ERROR: {str(e)}"
 
 @asset(
     group_name="ingestion",
-    description="Downloads raw filings in PARALLEL."
+    description="Downloads raw filings in PARALLEL.",
+    partitions_def=daily_partitions_def
 )
 def raw_form4_filings(context: AssetExecutionContext, sec_client: SECClient, daily_form4_list: pl.DataFrame):
     
@@ -94,7 +93,7 @@ def raw_form4_filings(context: AssetExecutionContext, sec_client: SECClient, dai
 
     # --- PARALLEL EXECUTION ---
     # 5 workers to stay under the SECs 10 req/sec limit.
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=7) as executor:
         futures = [
             executor.submit(process_filing, row, date_folder, sec_client, fs, context) 
             for row in rows
@@ -115,6 +114,4 @@ def raw_form4_filings(context: AssetExecutionContext, sec_client: SECClient, dai
 
     context.log.info(f"Successfully downloaded {downloaded_count} new raw filings.")
     
-    # We return a list of paths (or just a dummy list since downstream re-reads directory)
-    # Re-listing the directory is safer for downstream consistency
     return [get_data_path(f"raw/filings/{date_folder}")]
