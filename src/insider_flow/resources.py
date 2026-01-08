@@ -9,7 +9,6 @@ class SECClient(ConfigurableResource):
     A Dagster Resource to handle connections to the SEC EDGAR database.
     Includes rate limiting and automatic retries.
     """
-    
     def _get_headers(self):
         return {
             "User-Agent": SEC_USER_AGENT,

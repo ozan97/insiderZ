@@ -3,48 +3,49 @@ import re
 from lxml import etree
 from datetime import datetime
 from typing import List, Optional
+import fsspec # <--- NEW IMPORT
 from .schema import InsiderTrade
+from .utils import get_storage_options # <--- Need credentials
 
-# Improved Regex: Matches <XML> or <xml> or <XML ...>
+# Regex remains the same
 XML_REGEX = re.compile(r'<xml.*?>(.*?)</xml>', re.DOTALL | re.IGNORECASE)
 
 def extract_xml_from_text(content: str) -> Optional[str]:
-    """Extracts the XML portion from the SGML container."""
     match = XML_REGEX.search(content)
     if match:
         return match.group(1)
     return None
 
 def parse_filing(file_path: str, filing_date: str) -> List[InsiderTrade]:
-    """
-    Parses a single local .txt filing and returns a list of trades.
-    """
     try:
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+        # Get raw options
+        opts = get_storage_options()
+        
+        # --- Translate for fsspec
+        if "google_application_credentials" in opts:
+            opts["token"] = opts["google_application_credentials"]
+        
+        # Now pass these fixed opts to fsspec.open
+        with fsspec.open(file_path, mode='r', encoding='utf-8', errors='ignore', **opts) as f:
             content = f.read()
+
     except Exception as e:
         print(f"Error reading {file_path}: {e}")
         return []
 
     xml_content = extract_xml_from_text(content)
     if not xml_content:
-        # Debug: Uncomment this if you suspect regex failure
-        # print(f"No XML found in {file_path}")
         return []
 
     try:
-        # Use a parser that can recover from minor errors
         parser = etree.XMLParser(recover=True)
         root = etree.fromstring(xml_content.encode('utf-8'), parser=parser)
         
-        # --- CRITICAL FIX: STRIP NAMESPACES ---
-        # SEC files often have xmlns="http://..." which breaks simple xpath
         for elem in root.getiterator():
             if not hasattr(elem.tag, 'find'): continue
             i = elem.tag.find('}')
             if i >= 0:
                 elem.tag = elem.tag[i+1:]
-        # --------------------------------------
         
     except Exception as e:
         print(f"XML Parsing failed for {file_path}: {e}")
@@ -52,42 +53,31 @@ def parse_filing(file_path: str, filing_date: str) -> List[InsiderTrade]:
 
     trades = []
     
-    # --- 1. Header Info ---
     def get_text(node, path):
-        # Now that namespaces are stripped, these simple paths will work
         res = node.xpath(path)
         return res[0].text.strip() if res and res[0].text else None
 
-    # Issuer
     ticker = get_text(root, ".//issuerTradingSymbol")
     company_name = get_text(root, ".//issuerName")
     cik = get_text(root, ".//rptOwnerCik")
-    
-    # Owner
     owner_name = get_text(root, ".//rptOwnerName")
     owner_title = get_text(root, ".//officerTitle")
-    
-    # Roles
     is_director = get_text(root, ".//isDirector") == '1' or get_text(root, ".//isDirector") == 'true'
     is_officer = get_text(root, ".//isOfficer") == '1' or get_text(root, ".//isOfficer") == 'true'
     is_ten_percent = get_text(root, ".//isTenPercentOwner") == '1' or get_text(root, ".//isTenPercentOwner") == 'true'
 
-    filename = file_path.split(os.sep)[-1]
-    # Simple check to ensure we have an accession number
+    filename = file_path.split("/")[-1] # Always split by forward slash for cloud paths
     if '_' in filename:
         accession = filename.split('_')[-1].replace('.txt', '')
     else:
         accession = filename.replace('.txt', '')
     
-    # --- 2. Iterate Transactions (Table 1: Non-Derivative) ---
     transactions = root.xpath(".//nonDerivativeTransaction")
     
     for t in transactions:
         try:
             t_date_str = get_text(t, ".//transactionDate/value")
             t_code = get_text(t, ".//transactionCoding/transactionCode")
-            
-            # Safe conversion for numbers
             shares_str = get_text(t, ".//transactionAmounts/transactionShares/value")
             price_str = get_text(t, ".//transactionAmounts/transactionPricePerShare/value")
             
@@ -95,25 +85,14 @@ def parse_filing(file_path: str, filing_date: str) -> List[InsiderTrade]:
             t_price = float(price_str) if price_str else 0.0
             t_ad_code = get_text(t, ".//transactionAmounts/transactionAcquiredDisposedCode/value")
             
-            # --- FILTERING LOGIC ---
-            if not t_date_str or t_shares == 0:
-                continue
+            if not t_date_str or t_shares == 0: continue
+            if not t_code or t_code.upper() not in ['P', 'S']: continue
+            if t_price <= 0.0: continue
 
-            # Strict Code Filter: Only allow "P" (Purchase) and "S" (Sale)
-            # Ensure t_code is not None before checking
-            if not t_code or t_code.upper() not in ['P', 'S']:
-                continue
-
-            # Price Filter: Real trades must have a price > 0
-            if t_price <= 0.0:
-                continue
-            # --- END FILTERING ---
-
-            # Parse date safely
             try:
                 trans_date = datetime.strptime(t_date_str, "%Y-%m-%d").date()
             except ValueError:
-                continue # Skip invalid dates
+                continue
 
             trade = InsiderTrade(
                 cik=cik or "UNKNOWN",
@@ -134,8 +113,7 @@ def parse_filing(file_path: str, filing_date: str) -> List[InsiderTrade]:
                 acquired_disposed_code=t_ad_code or "A"
             )
             trades.append(trade)
-            
-        except Exception as e:
+        except Exception:
             continue
             
     return trades

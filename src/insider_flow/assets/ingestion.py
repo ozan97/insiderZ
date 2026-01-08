@@ -1,16 +1,19 @@
-import polars as pl
 import io
 import os
-from dagster import asset, AssetExecutionContext
-from datetime import datetime, timedelta
+from datetime import datetime
+from dagster import asset, AssetExecutionContext 
+import polars as pl
 from ..resources import SECClient
+from ..utils import get_data_path, get_storage_options
+from ..partitions import daily_partitions_def
 
 # Define the column names for the SEC master index
 SCHEMA_COLS = ["cik", "company_name", "form_type", "date_filed", "filename"]
 
 @asset(
     group_name="ingestion",
-    description="Downloads the Daily Master Index from SEC and filters for Form 4"
+    description="Downloads the Daily Master Index from SEC",
+    partitions_def=daily_partitions_def 
 )
 def daily_form4_list(context: AssetExecutionContext, sec_client: SECClient):
     """
@@ -21,20 +24,21 @@ def daily_form4_list(context: AssetExecutionContext, sec_client: SECClient):
     """
     
     # 1. Determine Date
-    target_date = datetime.now() - timedelta(days=1)
-    
+    target_date_str = context.partition_key
+    target_date = datetime.strptime(target_date_str, "%Y-%m-%d").date()
+    context.log.info(f"Processing Partition: {target_date}")
+
     # Skip weekends
     if target_date.weekday() > 4: 
-        target_date -= timedelta(days=target_date.weekday() - 4)
-
-    context.log.info(f"Targeting date: {target_date.date()}")
+        context.log.info(f"Date {target_date} is a weekend. Skipping.")
+        return pl.DataFrame(schema=SCHEMA_COLS)
 
     # 2. Get the Index URL and Content
     url = sec_client.get_daily_index_url(target_date)
     try:
         raw_text = sec_client.get_content(url)
     except Exception as e:
-        context.log.error(f"Failed to fetch index: {e}")
+        context.log.warning(f"No index found for {target_date} (Likely Holiday): {e}")
         return pl.DataFrame(schema=SCHEMA_COLS)
 
     # 3. Clean and Parse Data
@@ -79,11 +83,14 @@ def daily_form4_list(context: AssetExecutionContext, sec_client: SECClient):
     # 6. Save to Parquet
     date_str = target_date.strftime("%Y-%m-%d")
     file_name = f"form4_index_{date_str}.parquet"
-    save_path = os.path.join("data", "raw", file_name)
     
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    save_path = get_data_path(f"raw/{file_name}")
+    #save_path = os.path.join("data", "raw", file_name)
     
-    form4_df.write_parquet(save_path)
+    if "gs://" not in save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    
+    form4_df.write_parquet(save_path, storage_options=get_storage_options())
     
     context.log.info(f"Saved {len(form4_df)} rows to {save_path}")
     
