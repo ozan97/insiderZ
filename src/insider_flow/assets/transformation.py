@@ -4,7 +4,7 @@ from dagster import asset, AssetExecutionContext, Output, MetadataValue
 import polars as pl
 from typing import List
 from ..parsing import parse_filing
-from ..utils import get_data_path, get_storage_options
+from ..utils import get_storage_options, save_dataframe 
 from ..partitions import daily_partitions_def
 
 @asset(
@@ -17,20 +17,18 @@ def parsed_insider_trades(context: AssetExecutionContext, raw_form4_filings: Lis
     if not raw_form4_filings:
         return Output(pl.DataFrame(), metadata={"count": 0})
 
-    # The upstream asset returns the FOLDER path
     root_path = raw_form4_filings[0]
     
-    # 1. Determine Filesystem & Credentials
+    # 1. Setup Filesystem for Scanning (Read-Side)
+    # We still need manual fsspec setup here to glob files
     opts = get_storage_options()
     
-    # Polars uses 'google_application_credentials', but gcsfs/fsspec wants 'token'
+    # Translate credentials for fsspec if needed
     fsspec_opts = opts.copy()
     if "google_application_credentials" in opts:
         fsspec_opts["token"] = opts["google_application_credentials"]
-
+        
     protocol = "gs" if "gs://" in root_path else "file"
-    
-    # Pass the corrected options to fsspec
     fs = fsspec.filesystem(protocol, **fsspec_opts)
 
     context.log.info(f"Scanning directory: {root_path} with protocol {protocol}")
@@ -41,9 +39,8 @@ def parsed_insider_trades(context: AssetExecutionContext, raw_form4_filings: Lis
         if "gs://" in root_path:
             # Strip 'gs://' for the glob search
             search_path = root_path.replace("gs://", "")
-            # glob returns 'bucket/folder/file.txt'
             found_paths = fs.glob(f"{search_path}/*.txt")
-            # We must re-add 'gs://' so downstream functions know it's cloud
+            # Re-add 'gs://'
             all_files = [f"gs://{p}" for p in found_paths]
         else:
             # Local filesystem
@@ -52,9 +49,8 @@ def parsed_insider_trades(context: AssetExecutionContext, raw_form4_filings: Lis
             
     except Exception as e:
         context.log.error(f"Failed to list files in {root_path}: {e}")
-        # Hint for debugging
         if "Anonymous caller" in str(e):
-            context.log.error("Check if gcp_key.json exists and USE_CLOUD=True is set.")
+            context.log.error("Check if GCP_SERVICE_ACCOUNT_JSON env var is set.")
         return Output(pl.DataFrame(), metadata={"count": 0, "error": str(e)})
 
     context.log.info(f"Found {len(all_files)} files to parse.")
@@ -62,16 +58,13 @@ def parsed_insider_trades(context: AssetExecutionContext, raw_form4_filings: Lis
     if not all_files:
          return Output(pl.DataFrame(), metadata={"count": 0})
 
-    # 3. Determine Filing Date (metadata)
-    sample_path = all_files[0]
-    parts = sample_path.replace("\\", "/").split("/")
-    filing_date_str = parts[-2] 
+    # 3. Use Partition Key for Date (Cleaner than parsing path)
+    filing_date_str = context.partition_key # e.g., "2026-01-05"
 
     all_trades = []
     
     # 4. Parse Loop
     for i, file_path in enumerate(all_files):
-        # We pass the same opts logic to the parser via utils, but parse_filing needs to handle it
         trades = parse_filing(file_path, filing_date_str)
         if trades:
             all_trades.extend([t.model_dump() for t in trades])
@@ -83,17 +76,11 @@ def parsed_insider_trades(context: AssetExecutionContext, raw_form4_filings: Lis
         context.log.warning("Parsed 0 trades from all files.")
         return Output(pl.DataFrame(), metadata={"count": 0})
 
-    # 5. Save Output
     df = pl.DataFrame(all_trades)
     
+    # 5. Save using Utils (Write-Side)
     output_filename = f"trades_{filing_date_str}.parquet"
-    save_path = get_data_path(f"processed/{output_filename}")
-    
-    if "gs://" not in save_path:
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    
-    # Polars is happy with 'google_application_credentials', so we use the original 'opts'
-    df.write_parquet(save_path, storage_options=opts)
+    save_path = save_dataframe(df, f"processed/{output_filename}")
     
     # 6. Preview
     preview_md = df.head(10).to_pandas().to_markdown(index=False)

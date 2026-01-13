@@ -1,7 +1,6 @@
 import os
 import gcsfs
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
 from dagster import asset, AssetExecutionContext
 import polars as pl
 from ..resources import SECClient
@@ -10,10 +9,10 @@ from ..partitions import daily_partitions_def
 
 SEC_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
 
-def process_filing(row, date_folder, sec_client, fs, context):
+def process_filing(row, date_folder, sec_client, fs):
     """
     Helper function to process a single row.
-    Returns the path if downloaded, None if skipped/failed.
+    Returns the path if downloaded, None if skipped, Error string if failed.
     """
     try:
         cik = str(row["cik"])
@@ -30,11 +29,13 @@ def process_filing(row, date_folder, sec_client, fs, context):
         # 3. Check Existence (Fast fail)
         exists = False
         if USE_CLOUD and fs:
-            # Strip gs:// for fs.exists checks usually
-            check_path = output_filepath.replace("gs://", "").split("/", 1)[-1] if "gs://" in output_filepath else output_filepath
-            if fs.exists(output_filepath): 
+            # GCS check
+            # fs.exists expects 'bucket/path', so we strip 'gs://' just in case
+            check_path = output_filepath.replace("gs://", "")
+            if fs.exists(check_path): 
                 exists = True
         elif os.path.exists(output_filepath):
+            # Local check
             exists = True
 
         if exists:
@@ -64,42 +65,38 @@ def process_filing(row, date_folder, sec_client, fs, context):
 )
 def raw_form4_filings(context: AssetExecutionContext, sec_client: SECClient, daily_form4_list: pl.DataFrame):
     
+    # Fast exit if input is empty (e.g. weekends)
     if daily_form4_list.is_empty():
         return []
 
-    # --- Date Logic ---
-    try:
-        target_date = daily_form4_list["date_filed"][0]
-        if not isinstance(target_date, (datetime, type(datetime.now().date()))):
-             target_date_str = str(target_date)
-             target_date = datetime.strptime(target_date_str, "%Y-%m-%d").date()
-    except Exception as e:
-        context.log.error(f"Could not infer target date: {e}")
-        target_date = datetime.now().date()
-
-    date_folder = target_date.strftime("%Y-%m-%d")
+    # --- UPDATED DATE LOGIC ---
+    # Use the partition key directly. It is guaranteed to be "YYYY-MM-DD".
+    # This is safer than parsing the DataFrame.
+    date_folder = context.partition_key
+    # --------------------------
     
     # --- Filesystem Setup ---
     fs = None
     if USE_CLOUD:
         opts = get_storage_options()
+        # gcsfs uses 'token' for the credentials dict/path
         fs = gcsfs.GCSFileSystem(token=opts.get("google_application_credentials"))
     
     downloaded_count = 0
     rows = list(daily_form4_list.iter_rows(named=True))
     total_files = len(rows)
 
-    context.log.info(f"Starting parallel download for {total_files} files with 5 workers...")
+    context.log.info(f"Starting parallel download for {total_files} files (Target: {date_folder})")
 
     # --- PARALLEL EXECUTION ---
-    # 5 workers to stay under the SECs 10 req/sec limit.
-    with ThreadPoolExecutor(max_workers=7) as executor:
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        # Submit tasks
         futures = [
-            executor.submit(process_filing, row, date_folder, sec_client, fs, context) 
+            executor.submit(process_filing, row, date_folder, sec_client, fs) 
             for row in rows
         ]
         
-        # Process results as they complete
+        # Process results
         for i, future in enumerate(as_completed(futures)):
             result = future.result()
             
@@ -108,10 +105,11 @@ def raw_form4_filings(context: AssetExecutionContext, sec_client: SECClient, dai
             elif result:
                 downloaded_count += 1
             
-            # Log progress every 50 files
-            if (i + 1) % 200 == 0:
+            # Log progress less frequently to keep logs clean
+            if (i + 1) % 100 == 0:
                 context.log.info(f"Processed {i + 1}/{total_files} filings...")
 
     context.log.info(f"Successfully downloaded {downloaded_count} new raw filings.")
     
+    # Return the folder path so downstream knows where to look
     return [get_data_path(f"raw/filings/{date_folder}")]
