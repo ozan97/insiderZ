@@ -35,11 +35,11 @@ def high_conviction_buy_signals(context: AssetExecutionContext, parsed_insider_t
     ])
 
     # 3. Cluster Buys
-    clusters = scored.group_by(["ticker", "filing_date"]).len().rename({"len": "daily_buyer_count"})
+    clusters = scored.group_by(["ticker", "filing_date"]).len().rename({"len": "cluster_count"})
     scored = scored.join(clusters, on=["ticker", "filing_date"], how="left")
     
     scored = scored.with_columns(
-        pl.when(pl.col("daily_buyer_count") > 1)
+        pl.when(pl.col("cluster_count") > 1)
         .then(2).otherwise(0).alias("score_cluster")
     )
 
@@ -94,11 +94,11 @@ def high_conviction_sell_signals(context: AssetExecutionContext, parsed_insider_
     ])
 
     # 3. Cluster Sells
-    clusters = scored.group_by(["ticker", "filing_date"]).len().rename({"len": "daily_seller_count"})
+    clusters = scored.group_by(["ticker", "filing_date"]).len().rename({"len": "cluster_count"})
     scored = scored.join(clusters, on=["ticker", "filing_date"], how="left")
     
     scored = scored.with_columns(
-        pl.when(pl.col("daily_seller_count") > 1)
+        pl.when(pl.col("cluster_count") > 1)
         .then(2).otherwise(0).alias("score_cluster")
     )
 

@@ -5,7 +5,7 @@ import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
 import plotly.express as px
-from .utils import get_data_path
+from utils import get_data_path
 
 # ---------------------------------------------------------
 # 1. PAGE CONFIGURATION
@@ -68,7 +68,7 @@ def render_chart(ticker, trades_df):
             hovertemplate=(
                 "<b>%{text}</b><br>" +
                 "Date: %{x}<br>" +
-                "Buy @ $%{y:.2f}<br>" +
+                "Buy@ $%{y:.2f}<br>" +
                 "<extra></extra>" # Removes the secondary box
             ),
             text=buys['owner_name'] + "<br>Val: $" + buys['total_value'].apply(lambda x: f"{x:,.0f}")
@@ -86,7 +86,7 @@ def render_chart(ticker, trades_df):
             hovertemplate=(
                 "<b>%{text}</b><br>" +
                 "Date: %{x}<br>" +
-                "Seld@ $%{y:.2f}<br>" +
+                "Sld@ $%{y:.2f}<br>" +
                 "<extra></extra>" # Removes the secondary box
             ),
             text=sells['owner_name'] + " ($" + sells['total_value'].apply(lambda x: f"{x:,.0f}") + ")",
@@ -147,7 +147,7 @@ con = get_database_connection()
 # ---------------------------------------------------------
 # 3. LOAD DATA VIEWS
 # ---------------------------------------------------------
-signals_buy_path = get_data_path("processed/gold_signals_*.parquet")
+signals_buy_path = get_data_path("processed/gold_signals_buy_*.parquet")
 signals_sell_path = get_data_path("processed/gold_signals_sell_*.parquet")
 trades_path = get_data_path("processed/trades_*.parquet")
 
@@ -192,7 +192,7 @@ with tab_buys:
             SELECT 
                 filing_date, ticker, company_name, owner_name, owner_title, 
                 MAX(conviction_score) as conviction_score,
-                MAX(daily_buyer_count) as cluster_size,
+                MAX(cluster_count) as cluster_size,
                 SUM(total_value) as total_value_aggregated,
                 SUM(shares) as total_shares,
                 COUNT(*) as num_transactions,
@@ -240,7 +240,7 @@ with tab_sells:
             SELECT 
                 filing_date, ticker, company_name, owner_name, owner_title, 
                 MAX(conviction_score) as conviction_score,
-                MAX(daily_seller_count) as cluster_size,
+                MAX(cluster_count) as cluster_size,
                 SUM(total_value) as total_value_aggregated,
                 SUM(shares) as total_shares,
                 COUNT(*) as num_transactions,
