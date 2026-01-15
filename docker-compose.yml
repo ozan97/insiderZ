@@ -1,0 +1,48 @@
+version: "3.8"
+
+services:
+  # Service 1: The Streamlit Dashboard
+  dashboard:
+    build: .
+    container_name: insider_dashboard
+    restart: unless-stopped
+    command: uv run streamlit run src/insider_flow/dashboard.py --server.port=8501 --server.address=0.0.0.0
+    ports:
+      - "8501:8501"
+    environment:
+      - USE_CLOUD=True
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      - GCP_HMAC_ACCESS_KEY=${GCP_HMAC_ACCESS_KEY}
+      - GCP_HMAC_SECRET=${GCP_HMAC_SECRET}
+      - GCP_SERVICE_ACCOUNT_JSON=${GCP_SERVICE_ACCOUNT_JSON}
+
+  # Service 2: Dagster UI (Webserver)
+  dagster_webserver:
+    build: .
+    container_name: insider_dagster_ui
+    restart: unless-stopped
+    command: uv run dagster-webserver -h 0.0.0.0 -p 3000
+    ports:
+      - "3000:3000" 
+    volumes:
+      - dagster_data:/opt/dagster/dagster_home 
+    environment:
+      - USE_CLOUD=True
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      - GCP_SERVICE_ACCOUNT_JSON=${GCP_SERVICE_ACCOUNT_JSON}
+
+  # Service 3: Dagster Daemon (Scheduler)
+  dagster_daemon:
+    build: .
+    container_name: insider_dagster_daemon
+    restart: unless-stopped
+    command: uv run dagster-daemon run
+    volumes:
+      - dagster_data:/opt/dagster/dagster_home
+    environment:
+      - USE_CLOUD=True
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      - GCP_SERVICE_ACCOUNT_JSON=${GCP_SERVICE_ACCOUNT_JSON}
+
+volumes:
+  dagster_data: 
