@@ -1,17 +1,15 @@
 from dagster import Definitions, load_assets_from_modules
-from . import assets
 from .resources import SECClient
+from . import assets
 
-# 2. Load assets
-all_assets = load_assets_from_modules(
-    [
-        #assets.debug, 
-        assets.ingestion, 
-        assets.download_filings,
-        assets.transformation,
-        assets.signals
-    ]
-)
+all_assets = load_assets_from_modules([
+    assets.ingestion, 
+    assets.download_filings,
+    assets.transformation,
+    assets.signals,
+    assets.enrichtment
+])
+
 
 defs = Definitions(
     assets=all_assets,

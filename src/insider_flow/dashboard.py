@@ -68,7 +68,7 @@ def render_chart(ticker, trades_df):
             hovertemplate=(
                 "<b>%{text}</b><br>" +
                 "Date: %{x}<br>" +
-                "Buy @ $%{y:.2f}<br>" +
+                "Buy@ $%{y:.2f}<br>" +
                 "<extra></extra>" # Removes the secondary box
             ),
             text=buys['owner_name'] + "<br>Val: $" + buys['total_value'].apply(lambda x: f"{x:,.0f}")
@@ -86,7 +86,7 @@ def render_chart(ticker, trades_df):
             hovertemplate=(
                 "<b>%{text}</b><br>" +
                 "Date: %{x}<br>" +
-                "Seld@ $%{y:.2f}<br>" +
+                "Sld@ $%{y:.2f}<br>" +
                 "<extra></extra>" # Removes the secondary box
             ),
             text=sells['owner_name'] + " ($" + sells['total_value'].apply(lambda x: f"{x:,.0f}") + ")",
@@ -147,7 +147,7 @@ con = get_database_connection()
 # ---------------------------------------------------------
 # 3. LOAD DATA VIEWS
 # ---------------------------------------------------------
-signals_buy_path = get_data_path("processed/gold_signals_*.parquet")
+signals_buy_path = signals_path = get_data_path("processed/enriched_signals_*.parquet")
 signals_sell_path = get_data_path("processed/gold_signals_sell_*.parquet")
 trades_path = get_data_path("processed/trades_*.parquet")
 
@@ -184,44 +184,48 @@ tab_buys, tab_sells, tab_explorer = st.tabs(["📈 Good Buys", "📉 Good Sells"
 #  TAB 1: BUY SIGNALS 
 with tab_buys:
     if not has_buys:
-        st.info("No Buy Signals found.")
+        st.info("No Enriched Signals generated yet.")
     else:
-        st.header("📈 Top Buy Signals (Aggregated)")
-
-        query_buy = """
+        st.header("🏆 The Elite 1% (Ahab Score ≥ 12)")
+        st.markdown("""
+        **Criteria for Elite Status:**
+        *   **Mega Whale:** Transaction > $1,000,000
+        *   **Deep Value:** P/E < 15 and Price down > 30% from Highs
+        *   **Cluster:** Multiple C-Suite buyers
+        """)
+        
+        # Slider to control strictness (Default to 10 - Very Strict)
+        min_score = st.slider("Minimum Ahab Score", min_value=0, max_value=20, value=10)
+        
+        # Query
+        sig_df = con.execute(f"""
             SELECT 
-                filing_date, ticker, company_name, owner_name, owner_title, 
-                MAX(conviction_score) as conviction_score,
-                MAX(daily_buyer_count) as cluster_size,
-                SUM(total_value) as total_value_aggregated,
-                SUM(shares) as total_shares,
-                COUNT(*) as num_transactions,
-                SUM(total_value) / NULLIF(SUM(shares), 0) as avg_price
+                filing_date, 
+                ticker, 
+                owner_name, 
+                owner_title, 
+                total_value, 
+                ahab_score,
+                pe_ratio,
+                dip_from_52w_high,
+                cluster_count
             FROM signals_buy 
-            GROUP BY filing_date, ticker, company_name, owner_name, owner_title
-            HAVING total_value_aggregated > 0
-            ORDER BY filing_date DESC, conviction_score DESC 
-            LIMIT 100
-        """
+            WHERE ahab_score >= {min_score}
+            ORDER BY filing_date DESC, ahab_score DESC 
+            LIMIT 50
+        """).fetch_df()
+        
+        if not sig_df.empty:
+            # Format the "Dip" as percentage
+            sig_df['dip_from_52w_high'] = sig_df['dip_from_52w_high'].mul(100).round(1).astype(str) + '%'
 
-        df_buy = con.execute(query_buy).fetch_df()
-        if not df_buy.empty:
-            # Context function
-            def generate_reason(row):
-                reasons = []
-                if "CEO" in str(row['owner_title']).upper() or "CFO" in str(row['owner_title']).upper(): reasons.append("👑 C-Suite")
-                if row['total_value_aggregated'] > 500_000: reasons.append("💰 Whale")
-                if row['cluster_size'] > 1: reasons.append(f"🤝 Cluster ({row['cluster_size']} buyers)")
-                return ", ".join(reasons)
-            
-            df_buy['Signal Context'] = df_buy.apply(generate_reason, axis=1)
-            
             st.dataframe(
-                df_buy[["filing_date", "ticker", "owner_name", "owner_title", "total_value_aggregated", "conviction_score", "Signal Context"]].style
-                .format({"total_value_aggregated": "${:,.0f}"})
-                .background_gradient(subset=["conviction_score"], cmap="Greens"),
-                width='stretch'
+                sig_df.style.format({"total_value": "${:,.0f}", "pe_ratio": "{:.1f}"})
+                .background_gradient(subset=["ahab_score"], cmap="inferno"), # Inferno = intense colors for high scores
+                use_container_width=True
             )
+        else:
+            st.warning("No trades met the Elite criteria. Try lowering the Score Slider.")
 
 # TAB 2: SELL SIGNALS 
 with tab_sells:
@@ -240,7 +244,7 @@ with tab_sells:
             SELECT 
                 filing_date, ticker, company_name, owner_name, owner_title, 
                 MAX(conviction_score) as conviction_score,
-                MAX(daily_seller_count) as cluster_size,
+                MAX(cluster_count) as cluster_size,
                 SUM(total_value) as total_value_aggregated,
                 SUM(shares) as total_shares,
                 COUNT(*) as num_transactions,

@@ -1,28 +1,29 @@
-FROM python:3.11-slim
+# Use Python 3.12 Slim (Small & Fast)
+FROM python:3.12-slim
 
+# Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (curl needed for healthchecks/debugging)
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
-# Install uv
+# Install uv (The magic package manager)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
-# Copy dependency files first (Caching layer)
+# 1. Copy dependency files first (Caching layer)
+# Docker will reuse this layer if pyproject.toml hasn't changed
 COPY pyproject.toml uv.lock ./
 
-# Install dependencies into system python
+# 2. Install dependencies
+# --system: Install into the container's global python (no virtualenv needed inside Docker)
 RUN uv sync --frozen --system
 
-# Copy source code
+# 3. Copy the rest of the application code
 COPY src/ ./src/
-# Copy config files if you have them (but we will rely on Env Vars)
-COPY .env .env 
 
-# Create Dagster Home directory
-RUN mkdir -p /opt/dagster/dagster_home
+# 4. Setup Dagster Home
+# We create a directory for Dagster to store its SQLite DB and logs
 ENV DAGSTER_HOME=/opt/dagster/dagster_home
+RUN mkdir -p $DAGSTER_HOME
 
-# Copy dagster.yaml if you created one (optional)
-# COPY .dagster/dagster.yaml /opt/dagster/dagster_home/dagster.yaml
-
+# (Optional) We don't define a CMD here because docker-compose will handle it

@@ -3,9 +3,9 @@ import re
 from lxml import etree
 from datetime import datetime
 from typing import List, Optional
-import fsspec # <--- NEW IMPORT
+import fsspec
 from .schema import InsiderTrade
-from .utils import get_storage_options # <--- Need credentials
+from .utils import get_storage_options
 
 # Regex remains the same
 XML_REGEX = re.compile(r'<xml.*?>(.*?)</xml>', re.DOTALL | re.IGNORECASE)
@@ -18,10 +18,10 @@ def extract_xml_from_text(content: str) -> Optional[str]:
 
 def parse_filing(file_path: str, filing_date: str) -> List[InsiderTrade]:
     try:
-        # Get raw options
+        # Get fs options
         opts = get_storage_options()
         
-        # --- Translate for fsspec
+        # Translate for fsspec
         if "google_application_credentials" in opts:
             opts["token"] = opts["google_application_credentials"]
         
