@@ -21,7 +21,7 @@ services:
     build: .
     container_name: insider_dagster_ui
     restart: unless-stopped
-    command: uv run dagster-webserver -h 0.0.0.0 -p 3000
+    command: uv run dagster-webserver -h 0.0.0.0 -p 3000 -m src.insider_flow
     ports:
       - "3000:3000" 
     volumes:
@@ -36,7 +36,7 @@ services:
     build: .
     container_name: insider_dagster_daemon
     restart: unless-stopped
-    command: uv run dagster-daemon run
+    command: uv run dagster-daemon run -m src.insider_flow
     volumes:
       - dagster_data:/opt/dagster/dagster_home
     environment:
