@@ -5,7 +5,7 @@ from dagster import (
     build_schedule_from_partitioned_job
 )
 from .resources import SECClient
-import assets
+from .assets import ingestion, download_filings, transformation, signals, enrichtment
 
 
 all_assets = load_assets_from_modules([
@@ -23,9 +23,9 @@ daily_update_job = define_asset_job(
 )
 daily_schedule = build_schedule_from_partitioned_job(
     job=daily_update_job,
-    cron_schedule="0 9 * * 1-5", 
-    description="Daily Morning Run for Insider Trades",
-    execution_timezone="Europe/Zurich"
+    hour_of_day=9, 
+    minute_of_hour=0,  
+    description="Daily Morning Run for Insider Trades"
 )
 
 defs = Definitions(
