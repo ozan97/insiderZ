@@ -6,7 +6,7 @@ services:
     build: .
     container_name: insider_dashboard
     restart: unless-stopped
-    command: uv run streamlit run src/insider_flow/dashboard.py --server.port=8501 --server.address=0.0.0.0 --server.enableCORS=false --server.enableXsrfProtection=false
+    command: uv run streamlit run src/insider_flow/dashboard.py --server.port=8501 --server.address=0.0.0.0 --server.baseUrlPath=/dash --server.enableCORS=false --server.enableXsrfProtection=false
     ports:
       - "8501:8501"
     environment:
@@ -21,7 +21,7 @@ services:
     build: .
     container_name: insider_dagster_ui
     restart: unless-stopped
-    command: uv run dagster-webserver -h 0.0.0.0 -p 3000 -m src.insider_flow
+    command: uv run dagster-webserver -h 0.0.0.0 -p 3000 -m src.insider_flow --path-prefix /dagster
     ports:
       - "3000:3000" 
     volumes:
