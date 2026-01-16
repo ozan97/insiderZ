@@ -104,7 +104,7 @@ The Dashboard separates these into:
     - Calculate the 6-month "Win Rate" for every insider (e.g., "CEO has a 90% accuracy").
     - Display "Smart Money" badges next to insiders with proven track records.
     
-- [ ] **Market Context (Confluence):** 
+- [X] **Market Context (Confluence):** 
     - Enrich signals with live market metrics.
     - **Dip Score:** Is the stock near its 52-week low? (Value Signal).
     - **Valuation:** Is P/E < 15? (Cheap) or > 50? (Growth).
@@ -115,3 +115,4 @@ The Dashboard separates these into:
     - Trigger push notifications when a "Perfect Storm" trade occurs (Score ≥ 8).
 
 # Death to capitalism 🤗
+
