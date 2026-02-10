@@ -13,16 +13,28 @@ def high_conviction_buy_signals(context: AssetExecutionContext, parsed_insider_t
     if parsed_insider_trades.height == 0:
         return pl.DataFrame()
 
-    # Only Open Market Purchases ('P')
-    buys_df = parsed_insider_trades.filter(pl.col("transaction_code") == "P")
+    # 1. Filter and AGGREGATE immediately
+    # We group by the unique identifiers of a person's filing to collapse multiple lots
+    buys_df = (
+        parsed_insider_trades
+        .filter(pl.col("transaction_code") == "P")
+        .group_by(["filing_date", "ticker", "company_name", "owner_name", "owner_title", "accession_number"])
+        .agg([
+            pl.col("total_value").sum(),
+            pl.col("shares").sum(),
+            pl.col("price_per_share").mean(),
+            pl.col("transaction_date").min(),
+            pl.col("transaction_code").first()
+        ])
+    )
     
     if buys_df.height == 0:
         return pl.DataFrame()
 
-    # 1. Clean Titles
+    # 2. Clean Titles
     c_suite_regex = r"(?i)\b(CEO|CFO|CHIEF EXECUTIVE|CHIEF FINANCIAL|PRESIDENT)\b"
     
-    # 2. Add Scoring Columns
+    # 3. Add Scoring Columns (Based on aggregated totals)
     scored = buys_df.with_columns([
         pl.when(pl.col("owner_title").str.contains(c_suite_regex))
         .then(3).otherwise(0).alias("score_role"),
@@ -34,26 +46,30 @@ def high_conviction_buy_signals(context: AssetExecutionContext, parsed_insider_t
         .then(3).otherwise(0).alias("score_value_high")
     ])
 
-    # 3. Cluster Buys
-    clusters = scored.group_by(["ticker", "filing_date"]).len().rename({"len": "cluster_count"})
+    # 4. Correct Cluster Logic
+    # We count UNIQUE owners per ticker/date, not total rows.
+    clusters = (
+        scored
+        .group_by(["ticker", "filing_date"])
+        .agg(pl.col("owner_name").n_unique().alias("unique_owner_count"))
+    )
+    
     scored = scored.join(clusters, on=["ticker", "filing_date"], how="left")
     
     scored = scored.with_columns(
-        pl.when(pl.col("cluster_count") > 1)
+        pl.when(pl.col("unique_owner_count") > 1)
         .then(2).otherwise(0).alias("score_cluster")
     )
 
-    # 4. Total Score
+    # 5. Total Score
     final_df = scored.with_columns(
         (pl.col("score_role") + pl.col("score_value_mid") + pl.col("score_value_high") + pl.col("score_cluster"))
         .alias("conviction_score")
     )
 
-    # 5. Filter
+    # 6. Filter and Save
     high_conviction = final_df.filter(pl.col("conviction_score") >= 5)
     high_conviction = high_conviction.sort("conviction_score", descending=True)
-
-    context.log.info(f"Filtered {len(buys_df)} buys down to {len(high_conviction)} High Conviction BUY signals.")
 
     date_str = context.partition_key
     save_dataframe(high_conviction, f"processed/gold_signals_buy_{date_str}.parquet")

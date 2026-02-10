@@ -77,6 +77,7 @@ def parsed_insider_trades(context: AssetExecutionContext, raw_form4_filings: Lis
         return Output(pl.DataFrame(), metadata={"count": 0})
 
     df = pl.DataFrame(all_trades)
+    df = df.unique(subset=["accession_number", "owner_name", "transaction_date", "shares", "price_per_share"])
     
     # 5. Save using Utils (Write-Side)
     output_filename = f"trades_{filing_date_str}.parquet"
