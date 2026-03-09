@@ -3,118 +3,93 @@ import polars as pl
 from ..utils import save_dataframe 
 from ..partitions import daily_partitions_def
 
-@asset(
-    group_name="analytics",
-    description="Filters trades for high-conviction BUY signals",
-    partitions_def=daily_partitions_def
-)
-def high_conviction_buy_signals(context: AssetExecutionContext, parsed_insider_trades: pl.DataFrame):
-    
-    if parsed_insider_trades.height == 0:
-        return pl.DataFrame()
-
-    # Only Open Market Purchases ('P')
-    buys_df = parsed_insider_trades.filter(pl.col("transaction_code") == "P")
-    
-    if buys_df.height == 0:
-        return pl.DataFrame()
-
-    # 1. Clean Titles
-    c_suite_regex = r"(?i)\b(CEO|CFO|CHIEF EXECUTIVE|CHIEF FINANCIAL|PRESIDENT)\b"
-    
-    # 2. Add Scoring Columns
-    scored = buys_df.with_columns([
-        pl.when(pl.col("owner_title").str.contains(c_suite_regex))
-        .then(3).otherwise(0).alias("score_role"),
-        
-        pl.when(pl.col("total_value") > 100_000)
-        .then(2).otherwise(0).alias("score_value_mid"),
-
-        pl.when(pl.col("total_value") > 500_000)
-        .then(3).otherwise(0).alias("score_value_high")
-    ])
-
-    # 3. Cluster Buys
-    clusters = scored.group_by(["ticker", "filing_date"]).len().rename({"len": "cluster_count"})
-    scored = scored.join(clusters, on=["ticker", "filing_date"], how="left")
-    
-    scored = scored.with_columns(
-        pl.when(pl.col("cluster_count") > 1)
-        .then(2).otherwise(0).alias("score_cluster")
-    )
-
-    # 4. Total Score
-    final_df = scored.with_columns(
-        (pl.col("score_role") + pl.col("score_value_mid") + pl.col("score_value_high") + pl.col("score_cluster"))
-        .alias("conviction_score")
-    )
-
-    # 5. Filter
-    high_conviction = final_df.filter(pl.col("conviction_score") >= 5)
-    high_conviction = high_conviction.sort("conviction_score", descending=True)
-
-    context.log.info(f"Filtered {len(buys_df)} buys down to {len(high_conviction)} High Conviction BUY signals.")
-
-    date_str = context.partition_key
-    save_dataframe(high_conviction, f"processed/gold_signals_buy_{date_str}.parquet")
-    
-    return high_conviction
+C_SUITE_REGEX = r"(?i)\b(CEO|CFO|CHIEF EXECUTIVE|CHIEF FINANCIAL|PRESIDENT)\b"
 
 
 @asset(
     group_name="analytics",
-    description="Filters trades for high-conviction SELL signals",
+    description="Scores ALL trades (buys and sells) with a unified conviction model. No filtering — all trades are preserved.",
     partitions_def=daily_partitions_def
 )
-def high_conviction_sell_signals(context: AssetExecutionContext, parsed_insider_trades: pl.DataFrame):
-    
+def scored_trades(context: AssetExecutionContext, parsed_insider_trades: pl.DataFrame):
+
     if parsed_insider_trades.height == 0:
         return pl.DataFrame()
 
-    # Only Open Market Sales ('S')
-    sells_df = parsed_insider_trades.filter(pl.col("transaction_code") == "S")
-    
-    if sells_df.height == 0:
+    # 1. Aggregate: collapse multiple transaction lots per person per filing
+    agg_df = (
+        parsed_insider_trades
+        .group_by([
+            "filing_date", "ticker", "company_name",
+            "owner_cik", "owner_name", "owner_title",
+            "issuer_cik", "accession_number", "transaction_code",
+            "is_director", "is_officer", "is_ten_percent_owner",
+        ])
+        .agg([
+            pl.col("total_value").sum(),
+            pl.col("shares").sum(),
+            pl.col("price_per_share").mean(),
+            pl.col("transaction_date").min(),
+        ])
+    )
+
+    if agg_df.height == 0:
         return pl.DataFrame()
 
-    # 1. Clean Titles
-    c_suite_regex = r"(?i)\b(CEO|CFO|CHIEF EXECUTIVE|CHIEF FINANCIAL|PRESIDENT)\b"
-    
-    # 2. Add Scoring Columns
-    scored = sells_df.with_columns([
-        pl.when(pl.col("owner_title").str.contains(c_suite_regex))
-        .then(3).otherwise(0).alias("score_role"),
-        
-        pl.when(pl.col("total_value") > 100_000)
-        .then(2).otherwise(0).alias("score_value_mid"),
-
-        # Higher threshold for sales logic (>$1M)
-        pl.when(pl.col("total_value") > 1_000_000)
-        .then(3).otherwise(0).alias("score_value_high")
+    # 2. Role scoring
+    scored = agg_df.with_columns([
+        # C-suite: CEO / CFO / President
+        pl.when(pl.col("owner_title").str.contains(C_SUITE_REGEX))
+          .then(3).otherwise(0).alias("score_role"),
+        # Board member
+        pl.when(pl.col("is_director"))
+          .then(1).otherwise(0).alias("score_director"),
+        # Activist / founder (10%+ owner)
+        pl.when(pl.col("is_ten_percent_owner"))
+          .then(2).otherwise(0).alias("score_10pct"),
     ])
 
-    # 3. Cluster Sells
-    clusters = scored.group_by(["ticker", "filing_date"]).len().rename({"len": "cluster_count"})
-    scored = scored.join(clusters, on=["ticker", "filing_date"], how="left")
-    
+    # 3. Value scoring (tiered — highest matching tier only)
     scored = scored.with_columns(
-        pl.when(pl.col("cluster_count") > 1)
-        .then(2).otherwise(0).alias("score_cluster")
+        pl.when(pl.col("total_value") > 1_000_000).then(3)
+          .when(pl.col("total_value") > 500_000).then(2)
+          .when(pl.col("total_value") > 100_000).then(1)
+          .otherwise(0).alias("score_value")
     )
 
-    # 4. Total Score
-    final_df = scored.with_columns(
-        (pl.col("score_role") + pl.col("score_value_mid") + pl.col("score_value_high") + pl.col("score_cluster"))
-        .alias("conviction_score")
+    # 4. Cluster scoring: ≥2 unique owners trading the same ticker on the same day
+    clusters = (
+        scored
+        .group_by(["ticker", "filing_date", "transaction_code"])
+        .agg(pl.col("owner_cik").n_unique().alias("cluster_size"))
+    )
+    scored = scored.join(clusters, on=["ticker", "filing_date", "transaction_code"], how="left")
+
+    scored = scored.with_columns(
+        pl.when(pl.col("cluster_size") >= 2)
+          .then(2).otherwise(0).alias("score_cluster")
     )
 
-    # 5. Filter
-    high_conviction = final_df.filter(pl.col("conviction_score") >= 5)
-    high_conviction = high_conviction.sort("conviction_score", descending=True)
+    # 5. Total conviction score
+    scored = scored.with_columns(
+        (
+            pl.col("score_role")
+            + pl.col("score_director")
+            + pl.col("score_10pct")
+            + pl.col("score_value")
+            + pl.col("score_cluster")
+        ).alias("conviction_score")
+    )
 
-    context.log.info(f"Filtered {len(sells_df)} sells down to {len(high_conviction)} High Conviction SELL signals.")
+    scored = scored.sort("conviction_score", descending=True)
 
     date_str = context.partition_key
-    save_dataframe(high_conviction, f"processed/gold_signals_sell_{date_str}.parquet")
-    
-    return high_conviction
+    save_dataframe(scored, f"processed/scored_trades_{date_str}.parquet")
+
+    buy_count = scored.filter(pl.col("transaction_code") == "P").height
+    sell_count = scored.filter(pl.col("transaction_code") == "S").height
+    context.log.info(
+        f"Scored {scored.height} trades ({buy_count} buys, {sell_count} sells) for {date_str}"
+    )
+
+    return scored

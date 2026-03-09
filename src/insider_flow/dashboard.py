@@ -2,374 +2,239 @@ import streamlit as st
 import duckdb
 import os
 import pandas as pd
-import yfinance as yf
 import plotly.graph_objects as go
-import plotly.express as px
-from utils import get_data_path
+import yfinance as yf
+from insider_flow.utils import get_data_path
 
-# ---------------------------------------------------------
-# 1. PAGE CONFIGURATION
-# ---------------------------------------------------------
-st.set_page_config(
-    page_title="InsiderZ", 
-    page_icon="🐋", 
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="InsiderFlow", page_icon="🐋", layout="wide")
 
-st.title("Cpt. Ahab's Dashboard 🐋")
-st.subheader("Tracking Insider Trading Signals with Data Lake & DuckDB")
+# ---------------------------------------------------------------------------
+# DATA LOADING
+# ---------------------------------------------------------------------------
 
-# Helper functions
-@st.cache_data(ttl=3600) # Cache data for 1 hour so it's fast
-def get_stock_history(ticker):
-    """
-    Fetches 1 year of daily stock history from Yahoo Finance.
-    """
+def _duckdb_con():
+    con = duckdb.connect(database=":memory:")
+    con.execute("INSTALL httpfs; LOAD httpfs;")
+    access_key = os.getenv("GCP_HMAC_ACCESS_KEY")
+    secret_key = os.getenv("GCP_HMAC_SECRET")
+    if access_key and secret_key:
+        safe_ak = access_key.replace("'", "''")
+        safe_sk = secret_key.replace("'", "''")
+        con.execute(f"""
+            CREATE SECRET secret_gcs (
+                TYPE GCS, KEY_ID '{safe_ak}', SECRET '{safe_sk}'
+            );
+        """)
+    return con
+
+
+def _safe_read(con, pattern: str) -> pd.DataFrame:
+    path = get_data_path(pattern)
     try:
-        # Fetch 1 year of data
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="1y")
-        return hist.reset_index()
+        return con.execute(f"SELECT * FROM '{path}'").df()
     except Exception:
         return pd.DataFrame()
 
-def render_chart(ticker, trades_df):
-    """
-    Draws a line chart of stock price with insider trades overlaid as markers.
-    """
-    # 1. Get Stock History
-    stock_df = get_stock_history(ticker)
-    if stock_df.empty:
-        st.warning(f"Could not fetch stock history for {ticker}")
-        return
 
-    # 2. Create the Base Line Chart (Stock Price)
-    fig = go.Figure()
+@st.cache_data(ttl=3600)
+def load_trades():
+    con = _duckdb_con()
+    return _safe_read(con, "processed/scored_trades_*.parquet")
 
-    # Add Stock Price Line
-    fig.add_trace(go.Scatter(
-        x=stock_df['Date'], 
-        y=stock_df['Close'],
-        mode='lines',
-        name=f'{ticker} Price',
-        line=dict(color='gray', width=1)
-    ))
 
-    # 3. Overlay Insider Buys (Green Triangles)
-    buys = trades_df[trades_df['transaction_code'] == 'P']
-    if not buys.empty:
-        fig.add_trace(go.Scatter(
-            x=buys['transaction_date'],
-            y=buys['price_per_share'], # Use the price they actually paid
-            mode='markers',
-            name='Insider Buy',
-            marker=dict(symbol='triangle-up', size=12, color='#00CC96', line=dict(width=1, color='black')),
-            hovertemplate=(
-                "<b>%{text}</b><br>" +
-                "Date: %{x}<br>" +
-                "Buy@ $%{y:.2f}<br>" +
-                "<extra></extra>" # Removes the secondary box
-            ),
-            text=buys['owner_name'] + "<br>Val: $" + buys['total_value'].apply(lambda x: f"{x:,.0f}")
-        ))
+@st.cache_data(ttl=3600)
+def load_profiles():
+    con = _duckdb_con()
+    return _safe_read(con, "profiles/insider_profiles_*.parquet")
 
-    # 4. Overlay Insider Sells (Red Triangles Down)
-    sells = trades_df[trades_df['transaction_code'] == 'S']
-    if not sells.empty:
-        fig.add_trace(go.Scatter(
-            x=sells['transaction_date'],
-            y=sells['price_per_share'],
-            mode='markers',
-            name='Insider Sell',
-            marker=dict(symbol='triangle-down', size=12, color='#EF553B', line=dict(width=1, color='black')),
-            hovertemplate=(
-                "<b>%{text}</b><br>" +
-                "Date: %{x}<br>" +
-                "Sld@ $%{y:.2f}<br>" +
-                "<extra></extra>" # Removes the secondary box
-            ),
-            text=sells['owner_name'] + " ($" + sells['total_value'].apply(lambda x: f"{x:,.0f}") + ")",
-        ))
 
-    fig.update_layout(
-        title=f"{ticker}: Insider Entries & Exits vs Stock Price",
-        xaxis_title="Date",
-        yaxis_title="Price ($)",
-        template="plotly_white",
-        height=500,
-        hovermode="x unified"
-    )
-    
-    st.plotly_chart(fig, width='stretch')
-    
-# ---------------------------------------------------------
-# 2. DATA CONNECTION (DuckDB + Cloud/Local Logic)
-# ---------------------------------------------------------
-@st.cache_resource
-def get_database_connection():
-    """
-    Establishes a DuckDB connection and configures GCS authentication
-    using the modern DuckDB 1.0 Secrets Manager.
-    """
+@st.cache_data(ttl=3600)
+def load_track_records():
+    con = _duckdb_con()
+    return _safe_read(con, "profiles/track_records_*.parquet")
+
+
+@st.cache_data(ttl=3600)
+def get_stock_history(ticker: str):
     try:
-        con = duckdb.connect(database=":memory:")
-        con.execute("INSTALL httpfs; LOAD httpfs;")
-        
-        # Check environment for HMAC keys
-        use_cloud = os.getenv("USE_CLOUD", "False") == "True"
-        access_key = os.getenv("GCP_HMAC_ACCESS_KEY")
-        secret_key = os.getenv("GCP_HMAC_SECRET")
-        
-        if use_cloud and access_key and secret_key:
-            # Modern DuckDB 1.0+ Auth using HMAC Keys
-            con.execute(f"""
-                CREATE SECRET secret_gcs (
-                    TYPE GCS,
-                    KEY_ID '{access_key}',
-                    SECRET '{secret_key}'
-                );
-            """)
-        elif use_cloud:
-            # Fallback: Try to rely on system-environment (Cloud Run often injects this automatically)
-            # or the 'gcp_key.json' path if strictly necessary, but HMAC is preferred.
-            # If you are local without HMAC keys, this part might fail on DuckDB 1.0+.
-            # For local dev, ensure HMAC keys are in .env!
-            pass
+        return yf.Ticker(ticker).history(period="1y").reset_index()
+    except Exception:
+        return pd.DataFrame()
 
-        return con
-    except Exception as e:
-        st.error(f"Failed to initialize database: {e}")
-        st.stop()
 
-con = get_database_connection()
+# ---------------------------------------------------------------------------
+# LOAD DATA
+# ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------
-# 3. LOAD DATA VIEWS
-# ---------------------------------------------------------
-signals_buy_path = signals_path = get_data_path("processed/enriched_signals_*.parquet")
-signals_sell_path = get_data_path("processed/gold_signals_sell_*.parquet")
-trades_path = get_data_path("processed/trades_*.parquet")
+st.title("🐋 Cpt. Ahab's Dashboard")
 
-data_loaded = False
+trades_df = load_trades()
+profiles_df = load_profiles()
+records_df = load_track_records()
 
-try:
-    con.execute(f"CREATE OR REPLACE VIEW trades AS SELECT * FROM '{trades_path}'")
-    
-    # Load BUY Signals
-    try:
-        con.execute(f"CREATE OR REPLACE VIEW signals_buy AS SELECT * FROM '{signals_buy_path}'")
-        has_buys = True
-    except:
-        has_buys = False
-
-    # Load SELL Signals
-    try:
-        con.execute(f"CREATE OR REPLACE VIEW signals_sell AS SELECT * FROM '{signals_sell_path}'")
-        has_sells = True
-    except:
-        has_sells = False
-        
-    data_loaded = True
-except Exception as e:
-    st.warning("No data found. Please run the Dagster pipeline first.")
+if trades_df.empty:
+    st.warning("No trade data found yet. Run the Dagster pipeline first.")
     st.stop()
 
-# ---------------------------------------------------------
-# 4. DASHBOARD LAYOUT (TABS)
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------------
+# SIDEBAR
+# ---------------------------------------------------------------------------
 
-tab_buys, tab_sells, tab_explorer = st.tabs(["📈 Good Buys", "📉 Good Sells", "🔍 Data Explorer"])
+st.sidebar.header("Filters")
+min_score = st.sidebar.slider("Min Conviction Score", 0, 15, 0)
+tx_type = st.sidebar.selectbox("Trade Type", ["All", "Buys (P)", "Sells (S)"])
+ticker_search = st.sidebar.text_input("Ticker (e.g. NVDA)").upper().strip()
+insider_search = st.sidebar.text_input("Insider Name (partial match)").upper().strip()
 
-#  TAB 1: BUY SIGNALS 
-with tab_buys:
-    if not has_buys:
-        st.info("No Enriched Signals generated yet.")
-    else:
-        st.header("🏆 The Elite 1% (Ahab Score ≥ 12)")
-        st.markdown("""
-        **Criteria for Elite Status:**
-        *   **Mega Whale:** Transaction > $1,000,000
-        *   **Deep Value:** P/E < 15 and Price down > 30% from Highs
-        *   **Cluster:** Multiple C-Suite buyers
-        """)
-        
-        # Slider to control strictness (Default to 10 - Very Strict)
-        min_score = st.slider("Minimum Ahab Score", min_value=0, max_value=20, value=10)
-        
-        # Query
-        sig_df = con.execute(f"""
-            SELECT 
-                filing_date, 
-                ticker, 
-                owner_name, 
-                owner_title, 
-                total_value, 
-                ahab_score,
-                pe_ratio,
-                dip_from_52w_high,
-                cluster_count
-            FROM signals_buy 
-            WHERE ahab_score >= {min_score}
-            ORDER BY filing_date DESC, ahab_score DESC 
-            LIMIT 50
-        """).fetch_df()
-        
-        if not sig_df.empty:
-            # Format the "Dip" as percentage
-            sig_df['dip_from_52w_high'] = sig_df['dip_from_52w_high'].mul(100).round(1).astype(str) + '%'
+# ---------------------------------------------------------------------------
+# FILTERING
+# ---------------------------------------------------------------------------
 
+filtered = trades_df.copy()
+if min_score > 0:
+    filtered = filtered[filtered["conviction_score"] >= min_score]
+if tx_type == "Buys (P)":
+    filtered = filtered[filtered["transaction_code"] == "P"]
+elif tx_type == "Sells (S)":
+    filtered = filtered[filtered["transaction_code"] == "S"]
+if ticker_search:
+    filtered = filtered[filtered["ticker"] == ticker_search]
+if insider_search:
+    filtered = filtered[filtered["owner_name"].str.upper().str.contains(insider_search, na=False)]
+
+# ---------------------------------------------------------------------------
+# TABS
+# ---------------------------------------------------------------------------
+
+tab_trades, tab_insider, tab_chart = st.tabs([
+    "📋 All Trades", "🔍 Insider Lookup", "📉 Stock Analysis"
+])
+
+# --- TAB 1: All scored trades ---
+with tab_trades:
+    st.subheader(f"{len(filtered)} Trades")
+    display_cols = [
+        c for c in [
+            "filing_date", "ticker", "transaction_code", "owner_name",
+            "total_value", "shares", "price_per_share", "conviction_score",
+            "score_role", "score_cluster", "cluster_size",
+        ] if c in filtered.columns
+    ]
+    st.dataframe(
+        filtered[display_cols].sort_values("conviction_score", ascending=False),
+        use_container_width=True,
+    )
+
+# --- TAB 2: Insider Lookup ---
+with tab_insider:
+    if insider_search:
+        # Match from profiles
+        if not profiles_df.empty and "owner_name" in profiles_df.columns:
+            matched = profiles_df[profiles_df["owner_name"].str.upper().str.contains(insider_search, na=False)]
+        else:
+            matched = pd.DataFrame()
+
+        if matched.empty:
+            st.info("No insider profile found. Showing trades matching name.")
+        else:
+            for _, profile in matched.iterrows():
+                cik = profile.get("owner_cik", "")
+                st.subheader(f"{profile.get('owner_name', 'Unknown')}")
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Total Buys", int(profile.get("total_buys", 0)))
+                col2.metric("Total Sells", int(profile.get("total_sells", 0)))
+                col3.metric("Buy Value", f"${profile.get('total_buy_value', 0):,.0f}")
+                col4.metric("Sell Value", f"${profile.get('total_sell_value', 0):,.0f}")
+
+                # Show track record if available
+                if not records_df.empty and "owner_cik" in records_df.columns:
+                    rec = records_df[records_df["owner_cik"] == cik]
+                    if not rec.empty:
+                        r = rec.iloc[0]
+                        st.markdown("**Track Record**")
+                        rc1, rc2, rc3, rc4 = st.columns(4)
+                        rc1.metric("Trades Evaluated", int(r.get("total_trades_evaluated", 0)))
+                        wr30 = r.get("win_rate_30d")
+                        rc2.metric("Win Rate (30d)", f"{wr30:.0%}" if pd.notna(wr30) else "N/A")
+                        ar30 = r.get("avg_return_30d")
+                        rc3.metric("Avg Return (30d)", f"{ar30:.1%}" if pd.notna(ar30) else "N/A")
+                        wr90 = r.get("win_rate_90d")
+                        rc4.metric("Win Rate (90d)", f"{wr90:.0%}" if pd.notna(wr90) else "N/A")
+
+                st.markdown("---")
+
+        # Always show trade history for this person
+        st.subheader("Trade History")
+        person_trades = filtered if insider_search else pd.DataFrame()
+        if not person_trades.empty:
+            hist_cols = [c for c in [
+                "filing_date", "ticker", "transaction_code", "shares",
+                "price_per_share", "total_value", "conviction_score",
+            ] if c in person_trades.columns]
             st.dataframe(
-                sig_df.style.format({"total_value": "${:,.0f}", "pe_ratio": "{:.1f}"})
-                .background_gradient(subset=["ahab_score"], cmap="inferno"), # Inferno = intense colors for high scores
-                use_container_width=True
+                person_trades[hist_cols].sort_values("filing_date", ascending=False),
+                use_container_width=True,
             )
         else:
-            st.warning("No trades met the Elite criteria. Try lowering the Score Slider.")
-
-# TAB 2: SELL SIGNALS 
-with tab_sells:
-    if not has_sells:
-        st.info("No Sell Signals found.")
+            st.info("No trades found for this insider.")
     else:
-        st.header("📉 Top Sell Signals (Short Candidates)")
-        st.markdown("""
-        **Scoring Logic:**
-        *   **+3 Points:** C-Suite Executive Dumping Stock
-        *   **+3 Points:** Whale Dump (>$1M)
-        *   **+2 Points:** Cluster Sell (Multiple insiders selling same day)
-        """)
-        
-        query_sell = """
-            SELECT 
-                filing_date, ticker, company_name, owner_name, owner_title, 
-                MAX(conviction_score) as conviction_score,
-                MAX(cluster_count) as cluster_size,
-                SUM(total_value) as total_value_aggregated,
-                SUM(shares) as total_shares,
-                COUNT(*) as num_transactions,
-                SUM(total_value) / NULLIF(SUM(shares), 0) as avg_price
-            FROM signals_sell
-            GROUP BY filing_date, ticker, company_name, owner_name, owner_title
-            HAVING total_value_aggregated > 0
-            ORDER BY filing_date DESC, conviction_score DESC 
-            LIMIT 100
-        """
-        
-        df_sell = con.execute(query_sell).fetch_df()
-        
-        if not df_sell.empty:
-            def generate_sell_reason(row):
-                reasons = []
-                if "CEO" in str(row['owner_title']).upper() or "CFO" in str(row['owner_title']).upper(): reasons.append("👑 C-Suite")
-                if row['total_value_aggregated'] > 1_000_000: reasons.append("📉 Whale Dump")
-                if row['cluster_size'] > 1: reasons.append(f"⚠️ Cluster ({row['cluster_size']} sellers)")
-                return ", ".join(reasons)
-            
-            df_sell['Signal Context'] = df_sell.apply(generate_sell_reason, axis=1)
-            
-            # Display using RED gradient
-            st.dataframe(
-                df_sell[["filing_date", "ticker", "owner_name", "owner_title", "total_value_aggregated", "conviction_score", "Signal Context"]].style
-                .format({"total_value_aggregated": "${:,.0f}"})
-                .background_gradient(subset=["conviction_score"], cmap="Reds"),
-                width='stretch'
+        st.info("Enter an insider name in the sidebar to look them up.")
+
+        # Show top insiders by track record
+        if not records_df.empty:
+            st.subheader("Top Insiders by Win Rate (30d)")
+            top_cols = [c for c in [
+                "owner_name", "total_trades_evaluated", "win_rate_30d",
+                "avg_return_30d", "win_rate_90d", "avg_return_90d",
+            ] if c in records_df.columns]
+            top = records_df[records_df.get("total_trades_evaluated", pd.Series([0])) >= 3]
+            if not top.empty:
+                st.dataframe(
+                    top[top_cols].sort_values("win_rate_30d", ascending=False).head(25),
+                    use_container_width=True,
+                )
+
+# --- TAB 3: Stock Analysis (price chart + insider overlays) ---
+with tab_chart:
+    if not ticker_search:
+        st.info("Enter a ticker in the sidebar to see price analysis.")
+    else:
+        hist = get_stock_history(ticker_search)
+        ticker_trades = trades_df[trades_df["ticker"] == ticker_search]
+
+        if hist.empty:
+            st.warning("No price data found.")
+        else:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=hist["Date"], y=hist["Close"], name="Price",
+                line=dict(color="silver"),
+            ))
+
+            # Overlay buys
+            buys = ticker_trades[ticker_trades["transaction_code"] == "P"]
+            if not buys.empty:
+                fig.add_trace(go.Scatter(
+                    x=buys["transaction_date"], y=buys["price_per_share"],
+                    mode="markers", name="Insider Buy",
+                    marker=dict(symbol="triangle-up", size=12, color="green",
+                                line=dict(width=1, color="black")),
+                    text=buys["owner_name"],
+                ))
+
+            # Overlay sells
+            sells = ticker_trades[ticker_trades["transaction_code"] == "S"]
+            if not sells.empty:
+                fig.add_trace(go.Scatter(
+                    x=sells["transaction_date"], y=sells["price_per_share"],
+                    mode="markers", name="Insider Sell",
+                    marker=dict(symbol="triangle-down", size=12, color="red",
+                                line=dict(width=1, color="black")),
+                    text=sells["owner_name"],
+                ))
+
+            fig.update_layout(
+                height=600, template="plotly_white",
+                title=f"{ticker_search} — Insider Activity Overlay",
             )
-
-# --- TAB 3: RAW EXPLORER (The "Deep Dive" View) ---
-with tab_explorer:
-    st.header("Search the Data Lake")
-    
-    # Sidebar Filters (Only apply to this tab logic usually, but here global for simplicity)
-    col1, col2 = st.columns(2)
-    with col1:
-        selected_ticker = st.text_input("Filter by Ticker (e.g. NVDA)", "").upper()
-    with col2:
-        min_val = st.number_input("Min Value ($)", value=10000, step=10000)
-
-    # Build Query
-    query = f"""
-        SELECT filing_date, transaction_date, ticker, owner_name, owner_title, transaction_code, price_per_share, total_value
-        FROM trades 
-        WHERE total_value >= {min_val}
-    """
-    
-    if selected_ticker:
-        query += f" AND ticker = '{selected_ticker}'"
-    
-    query += " ORDER BY transaction_date DESC LIMIT 500"
-    
-    # Execute
-    df = con.execute(query).fetch_df()
-    
-    # Metrics
-    m1, m2 = st.columns(2)
-    m1.metric("Visible Trades", f"{len(df):,}")
-    if not df.empty:
-        m2.metric("Avg Trade Size", f"${df['total_value'].mean():,.0f}")
-    
-    st.divider()
-
-    # Visuals
-    if selected_ticker and not df.empty:
-        render_chart(selected_ticker, df)
-
-        
-    elif not df.empty:
-        st.subheader("Net Insider Volume (Buys vs Sells)")
-        
-        # 1. Prepare Data for Plotting
-        # We want Sells to appear as negative numbers so they point DOWN on the chart
-        chart_df = df.copy()
-        chart_df['plot_value'] = chart_df.apply(
-            lambda x: x['total_value'] if x['transaction_code'] == 'P' else -x['total_value'], 
-            axis=1
-        )
-        
-        # 2. Group by Date and Transaction Code to aggregate daily volume
-        # This merges the "Cluster" into a single bar per day/type
-        daily_chart = chart_df.groupby(["transaction_date", "transaction_code"])['plot_value'].sum().reset_index()
-        
-        # 3. Create the Chart
-        fig = px.bar(
-            daily_chart, 
-            x="transaction_date", 
-            y="plot_value", 
-            color="transaction_code",
-            title="Daily Insider Sentiment (Green = Buying, Red = Selling)",
-            # Custom Colors: Green for P, Red for S
-            color_discrete_map={"P": "#2ecc71", "S": "#e74c3c"},
-            # Custom Hover Data (Clean up the negative numbers in tooltip)
-            hover_data={"plot_value": ":$,.0f"} 
-        )
-        
-        # 4. Polish the Layout
-        fig.update_layout(
-            yaxis_title="Transaction Value ($)",
-            xaxis_title="Date",
-            legend_title="Type",
-            # Add a zero line to separate buys/sells clearly
-            shapes=[dict(type="line", x0=0, x1=1, y0=0, y1=0, xref="paper", line_width=1, line_color="black")]
-        )
-        
-        # 5. Fix Tooltip format (Remove the negative sign for Sells visually)
-        fig.update_traces(
-            hovertemplate="<b>Date:</b> %{x}<br><b>Net Value:</b> $%{y:,.0f}<extra></extra>"
-        )
-
-        st.plotly_chart(fig, width='stretch')
-
-        # Table
-        def highlight_buy_sell(row):
-            color = "#00ff3c73" if row.transaction_code == 'P' else "#ff505071"
-            return [f'background-color: {color}'] * len(row)
-
-        st.subheader("Transaction Details")
-        
-        st.dataframe(
-            df.style.format({"total_value": "${:,.0f}", "price_per_share": "${:.2f}"})
-            .apply(highlight_buy_sell, axis=1),
-            width='stretch'
-        )
-
-        
+            st.plotly_chart(fig, use_container_width=True)

@@ -1,10 +1,11 @@
 import os
 import fsspec
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dagster import asset, AssetExecutionContext, Output, MetadataValue
 import polars as pl
 from typing import List
 from ..parsing import parse_filing
-from ..utils import get_storage_options, save_dataframe 
+from ..utils import get_fsspec_options, save_dataframe 
 from ..partitions import daily_partitions_def
 
 @asset(
@@ -20,13 +21,7 @@ def parsed_insider_trades(context: AssetExecutionContext, raw_form4_filings: Lis
     root_path = raw_form4_filings[0]
     
     # 1. Setup Filesystem for Scanning (Read-Side)
-    # We still need manual fsspec setup here to glob files
-    opts = get_storage_options()
-    
-    # Translate credentials for fsspec if needed
-    fsspec_opts = opts.copy()
-    if "google_application_credentials" in opts:
-        fsspec_opts["token"] = opts["google_application_credentials"]
+    fsspec_opts = get_fsspec_options()
         
     protocol = "gs" if "gs://" in root_path else "file"
     fs = fsspec.filesystem(protocol, **fsspec_opts)
@@ -61,22 +56,34 @@ def parsed_insider_trades(context: AssetExecutionContext, raw_form4_filings: Lis
     # 3. Use Partition Key for Date (Cleaner than parsing path)
     filing_date_str = context.partition_key # e.g., "2026-01-05"
 
+    # Build a dedicated read-side filesystem once, pass into every parse_filing call
+    read_opts = get_fsspec_options()
+    read_fs = fsspec.filesystem(protocol, **read_opts)
+
     all_trades = []
+    total_files = len(all_files)
+    parsed_count = 0
     
-    # 4. Parse Loop
-    for i, file_path in enumerate(all_files):
-        trades = parse_filing(file_path, filing_date_str)
-        if trades:
-            all_trades.extend([t.model_dump() for t in trades])
-        
-        if (i + 1) % 50 == 0:
-            context.log.info(f"Parsed {i + 1}/{len(all_files)} filings...")
+    # 4. Parallel Parse Loop
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {
+            executor.submit(parse_filing, fp, filing_date_str, read_fs): fp
+            for fp in all_files
+        }
+        for future in as_completed(futures):
+            trades = future.result()
+            if trades:
+                all_trades.extend([t.model_dump() for t in trades])
+            parsed_count += 1
+            if parsed_count % 100 == 0:
+                context.log.info(f"Parsed {parsed_count}/{total_files} filings...")
 
     if not all_trades:
         context.log.warning("Parsed 0 trades from all files.")
         return Output(pl.DataFrame(), metadata={"count": 0})
 
     df = pl.DataFrame(all_trades)
+    df = df.unique(subset=["accession_number", "owner_name", "transaction_date", "shares", "price_per_share"])
     
     # 5. Save using Utils (Write-Side)
     output_filename = f"trades_{filing_date_str}.parquet"

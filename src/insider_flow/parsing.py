@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import List, Optional
 import fsspec
 from .schema import InsiderTrade
-from .utils import get_storage_options
+from .utils import get_fsspec_options
 
 # Regex remains the same
 XML_REGEX = re.compile(r'<xml.*?>(.*?)</xml>', re.DOTALL | re.IGNORECASE)
@@ -16,18 +16,16 @@ def extract_xml_from_text(content: str) -> Optional[str]:
         return match.group(1)
     return None
 
-def parse_filing(file_path: str, filing_date: str) -> List[InsiderTrade]:
+def parse_filing(file_path: str, filing_date: str, fs=None) -> List[InsiderTrade]:
     try:
-        # Get fs options
-        opts = get_storage_options()
-        
-        # Translate for fsspec
-        if "google_application_credentials" in opts:
-            opts["token"] = opts["google_application_credentials"]
-        
-        # Now pass these fixed opts to fsspec.open
-        with fsspec.open(file_path, mode='r', encoding='utf-8', errors='ignore', **opts) as f:
-            content = f.read()
+        if fs is not None:
+            # Use the pre-built filesystem (avoids recreating per file)
+            with fs.open(file_path, mode='r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+        else:
+            opts = get_fsspec_options()
+            with fsspec.open(file_path, mode='r', encoding='utf-8', errors='ignore', **opts) as f:
+                content = f.read()
 
     except Exception as e:
         print(f"Error reading {file_path}: {e}")
@@ -59,7 +57,8 @@ def parse_filing(file_path: str, filing_date: str) -> List[InsiderTrade]:
 
     ticker = get_text(root, ".//issuerTradingSymbol")
     company_name = get_text(root, ".//issuerName")
-    cik = get_text(root, ".//rptOwnerCik")
+    issuer_cik = get_text(root, ".//issuerCik")
+    owner_cik = get_text(root, ".//rptOwnerCik")
     owner_name = get_text(root, ".//rptOwnerName")
     owner_title = get_text(root, ".//officerTitle")
     is_director = get_text(root, ".//isDirector") == '1' or get_text(root, ".//isDirector") == 'true'
@@ -95,7 +94,8 @@ def parse_filing(file_path: str, filing_date: str) -> List[InsiderTrade]:
                 continue
 
             trade = InsiderTrade(
-                cik=cik or "UNKNOWN",
+                owner_cik=owner_cik or "UNKNOWN",
+                issuer_cik=issuer_cik or "UNKNOWN",
                 accession_number=accession,
                 filing_date=datetime.strptime(str(filing_date), "%Y-%m-%d").date(),
                 ticker=ticker or "UNKNOWN",

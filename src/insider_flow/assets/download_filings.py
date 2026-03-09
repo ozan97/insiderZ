@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dagster import asset, AssetExecutionContext
 import polars as pl
 from ..resources import SECClient
-from ..utils import get_data_path, USE_CLOUD, get_storage_options
+from ..utils import get_data_path, USE_CLOUD, get_fsspec_options
 from ..partitions import daily_partitions_def
 
 SEC_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
@@ -78,9 +78,8 @@ def raw_form4_filings(context: AssetExecutionContext, sec_client: SECClient, dai
     # --- Filesystem Setup ---
     fs = None
     if USE_CLOUD:
-        opts = get_storage_options()
-        # gcsfs uses 'token' for the credentials dict/path
-        fs = gcsfs.GCSFileSystem(token=opts.get("google_application_credentials"))
+        fsspec_opts = get_fsspec_options()
+        fs = gcsfs.GCSFileSystem(token=fsspec_opts.get("token"))
     
     downloaded_count = 0
     rows = list(daily_form4_list.iter_rows(named=True))
