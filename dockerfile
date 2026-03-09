@@ -29,6 +29,10 @@ COPY --from=builder /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 
 COPY src/ ./src/
+COPY pyproject.toml ./
 
+RUN uv pip install --no-deps -e .
+
+ENV PYTHONPATH="/app/src"
 ENV DAGSTER_HOME=/opt/dagster/dagster_home
 RUN mkdir -p $DAGSTER_HOME
