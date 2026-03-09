@@ -5,15 +5,16 @@ from dagster import (
     build_schedule_from_partitioned_job
 )
 from .resources import SECClient
-from .assets import ingestion, download_filings, transformation, signals, enrichtment
+from .assets import ingestion, download_filings, transformation, signals, enrichtment, track_records
 
 
 all_assets = load_assets_from_modules([
-    assets.ingestion, 
-    assets.download_filings,
-    assets.transformation,
-    assets.signals,
-    assets.enrichtment
+    ingestion, 
+    download_filings,
+    transformation,
+    signals,
+    enrichtment,
+    track_records,
 ])
 
 

@@ -4,7 +4,8 @@ from datetime import date, datetime
 
 class InsiderTrade(BaseModel):
     # Metadata
-    cik: str
+    owner_cik: str
+    issuer_cik: str
     accession_number: str
     filing_date: date
     
